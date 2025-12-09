@@ -1,14 +1,30 @@
+{{ if img }}
+<p>
+  <img src="{{ img }}" referrerpolicy="no-referrer" loading="lazy">
+</p>
+{{ /if }}
+
+{{ if description }}
+<p>
+  {{@ description }}
+</p>
+{{ /if }}
+
 {{ if embed }}
-{{ if ugc }}
-<iframe width="640" height="360" src="https://www.bilibili.com/blackboard/html5mobileplayer.html?aid={{ aid }}&cid={{ cid }}&bvid={{ bvid }}" frameborder="0" allowfullscreen></iframe>
+  {{ if ugc }}
+  <p>
+    <iframe
+      src="https://player.bilibili.com/player.html?aid={{ aid }}&bvid={{ bvid }}&page=1"
+      scrolling="no"
+      border="0"
+      frameborder="no"
+      framespacing="0"
+      allowfullscreen="true">
+    </iframe>
+  </p>
+  {{ /if }}
+
+  {{ if ogv }}
+  <iframe width="640" height="360" src="https://www.bilibili.com/blackboard/html5mobileplayer.html?seasonId={{ seasonId }}&episodeId={{ episodeId }}" frameborder="0" allowfullscreen></iframe>
+  {{ /if }}
 {{ /if }}
-{{ if ogv }}
-<iframe width="640" height="360" src="https://www.bilibili.com/blackboard/html5mobileplayer.html?seasonId={{ seasonId }}&episodeId={{ episodeId }}" frameborder="0" allowfullscreen></iframe>
-{{ /if }}
-<br>
-{{ /if }}
-{{ if img}}
-<img src="{{ img }}">
-<br>
-{{ /if }}
-{{@ description }}
