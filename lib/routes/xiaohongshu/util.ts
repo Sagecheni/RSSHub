@@ -1,14 +1,44 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import { load } from 'cheerio';
 
 import { config } from '@/config';
 import CaptchaError from '@/errors/types/captcha';
+import InvalidParameterError from '@/errors/types/invalid-parameter';
 import cache from '@/utils/cache';
 import logger from '@/utils/logger';
 import ofetch from '@/utils/ofetch';
 import { parseDate } from '@/utils/parse-date';
 import puppeteer, { getPuppeteerPage } from '@/utils/puppeteer';
+import { setCookies } from '@/utils/puppeteer-utils';
 
 // Common headers for requests
+const sanitizeCookieString = (cookie?: string) => {
+    if (!cookie) {
+        return '';
+    }
+    const forbidden = new Set(['path', 'domain', 'expires', 'max-age', 'samesite', 'secure', 'httponly']);
+    const segments = cookie
+        .split(/;\s*/)
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .map((segment) => {
+            const eqIndex = segment.indexOf('=');
+            if (eqIndex === -1) {
+                return null;
+            }
+            const key = segment.slice(0, eqIndex).trim();
+            const value = segment.slice(eqIndex + 1).trim();
+            if (!key || forbidden.has(key.toLowerCase())) {
+                return null;
+            }
+            return `${key}=${value}`;
+        })
+        .filter(Boolean);
+    return segments.join('; ');
+};
+
 const getHeaders = (cookie?: string) => ({
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Encoding': 'gzip, deflate, br',
@@ -26,8 +56,94 @@ const getHeaders = (cookie?: string) => ({
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    ...(cookie ? { Cookie: cookie } : {}),
+    ...(cookie ? { Cookie: sanitizeCookieString(cookie) } : {}),
 });
+
+const shouldDumpCollectHtml = (() => {
+    const flag = process.env.XHS_DUMP ?? '';
+    return ['1', 'true', 'yes'].includes(flag.toLowerCase());
+})();
+
+
+const dumpCollectPage = async (page, stage: string) => {
+    if (!shouldDumpCollectHtml) {
+        return;
+    }
+    try {
+        const html = await page.content();
+        const logsDir = path.join(process.cwd(), 'logs');
+        await mkdir(logsDir, { recursive: true });
+        const filePath = path.join(logsDir, `xhs-collect-${stage}-${Date.now()}.html`);
+        await writeFile(filePath, html, 'utf8');
+        logger.warn(`Dumped Xiaohongshu collect page to ${filePath}`);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(`Failed to dump Xiaohongshu collect page: ${message}`);
+    }
+};
+
+const readInitialStateFromHtml = async (page) => {
+    try {
+        const html = await page.content();
+        const $ = load(html);
+        const script = extractInitialState($);
+        if (script) {
+            return JSON.parse(script);
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(`Failed to read initial state from HTML: ${message}`);
+    }
+};
+
+const unwrapVueValue = (value) => (value && typeof value === 'object' && '_rawValue' in value ? value._rawValue : value);
+
+const wrapNotesAsCollect = (notes) => (Array.isArray(notes) && notes.length ? { data: { notes } } : null);
+
+const hasCollectNotes = (collect) => {
+    if (!collect) {
+        return false;
+    }
+    const list = collect?.data?.notes || collect?.data?.note_list || collect?.notes || collect?.noteList;
+    if (Array.isArray(list)) {
+        return list.length > 0;
+    }
+    return Array.isArray(collect) && collect.length > 0;
+};
+
+const extractCollectFromState = (state) => {
+    if (!state?.user) {
+        return null;
+    }
+    const userState = state.user;
+    let collect = unwrapVueValue(userState.collect);
+    if (collect && hasCollectNotes(collect)) {
+        return collect;
+    }
+
+    const notes = unwrapVueValue(userState.notes);
+    if (!Array.isArray(notes)) {
+        return null;
+    }
+
+    const activeSubTab = unwrapVueValue(userState.activeSubTab);
+    if (typeof activeSubTab?.index === 'number') {
+        const target = notes[activeSubTab.index];
+        const wrapped = wrapNotesAsCollect(target);
+        if (wrapped) {
+            return wrapped;
+        }
+    }
+
+    for (const bucket of notes) {
+        const wrapped = wrapNotesAsCollect(bucket);
+        if (wrapped) {
+            return wrapped;
+        }
+    }
+
+    return null;
+};
 
 const getUser = (url, cache) =>
     cache.tryGet(
@@ -37,12 +153,23 @@ const getUser = (url, cache) =>
                 onBeforeLoad: async (page) => {
                     await page.setRequestInterception(true);
                     page.on('request', (request) => {
-                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'other' ? request.continue() : request.abort();
+                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other' ? request.continue() : request.abort();
                     });
+                    const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
+                    if (cookie) {
+                        await page.setExtraHTTPHeaders({
+                            Cookie: cookie,
+                        });
+                        try {
+                            await setCookies(page, cookie, '.xiaohongshu.com');
+                        } catch (error) {
+                            const message = error instanceof Error ? error.message : String(error);
+                            logger.debug(`Failed to set cookies in puppeteer for user page: ${message}`);
+                        }
+                    }
                 },
             });
             try {
-                let collect = '';
                 logger.http(`Requesting ${url}`);
                 await page.goto(url, {
                     waitUntil: 'domcontentloaded',
@@ -53,29 +180,24 @@ const getUser = (url, cache) =>
                     throw new CaptchaError('小红书风控校验，请稍后再试');
                 }
 
-                const initialState = await page.evaluate(() => (window as any).__INITIAL_STATE__);
+                let initialState = await page.evaluate(() => (window as any).__INITIAL_STATE__);
+                if (!initialState?.user) {
+                    initialState = await readInitialStateFromHtml(page);
+                }
 
-                if (!(await page.$('.lock-icon'))) {
-                    await page.click('div.reds-tab-item:nth-child(2)');
-                    try {
-                        const response = await page.waitForResponse(
-                            (res) => {
-                                const req = res.request();
-                                return req.url().includes('/api/sns/web/v2/note/collect/page') && req.method() === 'GET' && req.resourceType() === 'xhr';
-                            },
-                            { timeout: 5000 }
-                        );
-                        collect = await response.json();
-                    } catch {
-                        //
+                if (!initialState?.user) {
+                    const currentUrl = page.url();
+                    if (/passport|login/.test(currentUrl)) {
+                        throw new InvalidParameterError('访问用户内容需要配置 XIAOHONGSHU_COOKIE');
                     }
+                    throw new InvalidParameterError('无法获取用户数据，请稍后再试');
                 }
 
                 let { userPageData, notes } = initialState.user;
                 userPageData = userPageData._rawValue || userPageData;
                 notes = notes._rawValue || notes;
 
-                return { userPageData, notes, collect };
+                return { userPageData, notes };
             } finally {
                 await destory();
             }
@@ -83,6 +205,236 @@ const getUser = (url, cache) =>
         config.cache.routeExpire,
         false
     );
+
+const fetchCollectFromHtml = async (url: string) => {
+    if (!config.xiaohongshu.cookie) {
+        return null;
+    }
+    try {
+        logger.http(`Requesting ${url} via HTTP for collect`);
+        const res = await ofetch(url, {
+            headers: getHeaders(config.xiaohongshu.cookie),
+        });
+        const $ = load(res);
+        const script = extractInitialState($);
+        if (!script) {
+            return null;
+        }
+        const state = JSON.parse(script);
+        return extractCollectFromState(state);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(`Failed to fetch collect via HTTP: ${message}`);
+        return null;
+    }
+};
+
+const getUserCollect = (url, cache) =>
+    cache.tryGet(
+        `${url}?tab=fav&subTab=note`,
+        async () => {
+            const collectUrl = `${url}?tab=fav&subTab=note`;
+            const collectFromHttp = await fetchCollectFromHtml(collectUrl);
+            if (collectFromHttp) {
+                return collectFromHttp;
+            }
+            const { page, destory } = await getPuppeteerPage(collectUrl, {
+                onBeforeLoad: async (page) => {
+                    await page.setRequestInterception(true);
+                    page.on('request', (request) => {
+                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other' ? request.continue() : request.abort();
+                    });
+                    const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
+                    if (cookie) {
+                        await page.setExtraHTTPHeaders({
+                            Cookie: cookie,
+                        });
+                        try {
+                            await setCookies(page, cookie, '.xiaohongshu.com');
+                        } catch (error) {
+                            const message = error instanceof Error ? error.message : String(error);
+                            logger.debug(`Failed to set cookies in puppeteer for collect page: ${message}`);
+                        }
+                    }
+                },
+            });
+            try {
+                logger.http(`Requesting ${collectUrl}`);
+                const collectResponsePromise = page
+                    .waitForResponse(
+                        (res) => {
+                            const req = res.request();
+                            return req.url().includes('/api/sns/web/v2/note/collect/page') && req.method() === 'GET';
+                        },
+                        { timeout: 15000 }
+                    )
+                    .catch(() => null);
+                await page.goto(collectUrl, {
+                    waitUntil: 'domcontentloaded',
+                });
+                await page.waitForSelector('div.reds-tab-item:nth-child(2), #red-captcha', {
+                    timeout: 15000,
+                });
+
+                if (await page.$('#red-captcha')) {
+                    throw new CaptchaError('小红书风控校验，请稍后再试');
+                }
+
+                const currentUrl = page.url();
+                if (/passport|login/.test(currentUrl)) {
+                    // 如果命中登录页，说明触发了需要 cookie 的风控，提示用户在配置中提供 XIAOHONGSHU_COOKIE
+                    throw new InvalidParameterError('访问收藏内容需要配置 XIAOHONGSHU_COOKIE');
+                }
+
+                let collect;
+                const response = await collectResponsePromise;
+                if (response) {
+                    try {
+                        collect = await response.json();
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.debug(`Failed to parse collect response json: ${message}`);
+                    }
+                }
+
+                const ensureCollectByClick = async () => {
+                    const hasLockIcon = await page.$('.lock-icon');
+                    if (hasLockIcon) {
+                        return null;
+                    }
+                    try {
+                        const waitForCollect = page
+                            .waitForResponse(
+                                (res) => {
+                                    const req = res.request();
+                                    return req.url().includes('/api/sns/web/v2/note/collect/page') && req.method() === 'GET';
+                                },
+                                { timeout: 15000 }
+                            )
+                            .catch(() => null);
+                        await page.click('div.reds-tab-item:nth-child(2)');
+                        const response = await waitForCollect;
+                        if (response) {
+                            return await response.json();
+                        }
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.debug(`Failed to fetch collect data by clicking tab: ${message}`);
+                    }
+                    return null;
+                };
+
+                let initialState = await page.evaluate(() => (window as any).__INITIAL_STATE__);
+                if (!initialState?.user) {
+                    initialState = await readInitialStateFromHtml(page);
+                }
+                if (!collect) {
+                    collect = extractCollectFromState(initialState);
+                }
+                if (!collect) {
+                    collect = await ensureCollectByClick();
+                }
+                if (!collect) {
+                    collect = await extractCollectFromDom(page, url);
+                }
+                if (!collect) {
+                    await dumpCollectPage(page, 'failure');
+                    throw new InvalidParameterError('无法获取收藏内容，请稍后再试');
+                }
+
+                return collect;
+            } finally {
+                await destory();
+            }
+        },
+        config.cache.routeExpire,
+        false
+    );
+
+const parseLikeCount = (text?: string | null) => {
+    if (!text) {
+        return undefined;
+    }
+    let normalized = text.trim();
+    if (!normalized) {
+        return undefined;
+    }
+    let multiplier = 1;
+    if (normalized.includes('万')) {
+        multiplier = 10000;
+        normalized = normalized.replace('万', '');
+    }
+    normalized = normalized.replace(/[^\d.]/g, '');
+    const value = Number.parseFloat(normalized);
+    if (Number.isNaN(value)) {
+        return undefined;
+    }
+    return Math.round(value * multiplier);
+};
+
+const extractCollectFromDom = async (page, baseUrl: string) => {
+    const items = await page.evaluate(() => {
+        const sections = Array.from(document.querySelectorAll('#userPostedFeeds section.note-item'));
+        return sections
+            .map((section) => {
+                const coverLink = section.querySelector('a.cover');
+                const titleEl = section.querySelector('.footer a.title');
+                const authorEl = section.querySelector('.author .name');
+                const likeEl = section.querySelector('.like-wrapper .count');
+                const imgEl = coverLink?.querySelector('img');
+                const href = coverLink?.getAttribute('href') || '';
+                if (!href) {
+                    return null;
+                }
+                return {
+                    href,
+                    title: titleEl?.textContent?.trim() || '',
+                    author: authorEl?.textContent?.trim() || '',
+                    likes: likeEl?.textContent?.trim() || '',
+                    cover: imgEl?.getAttribute('src') || '',
+                };
+            })
+            .filter((item) => item && item.href);
+    });
+
+    if (!items?.length) {
+        return null;
+    }
+
+    const notes = items
+        .map((item) => {
+            const urlObj = new URL(item.href, 'https://www.xiaohongshu.com');
+            const segments = urlObj.pathname.split('/').filter(Boolean);
+            const noteId = segments.pop();
+            if (!noteId) {
+                return null;
+            }
+            const likedCount = parseLikeCount(item.likes);
+            const coverList = item.cover ? [{ url: item.cover }] : [];
+            return {
+                display_title: item.title || '收藏笔记',
+                note_id: noteId,
+                cover: {
+                    info_list: coverList,
+                },
+                user: {
+                    nickname: item.author,
+                },
+                interact_info: likedCount ? { likedCount } : undefined,
+            };
+        })
+        .filter(Boolean);
+
+    if (!notes.length) {
+        return null;
+    }
+
+    return {
+        data: {
+            notes,
+        },
+    };
+};
 
 const getBoard = (url, cache) =>
     cache.tryGet(
@@ -283,4 +635,4 @@ async function checkCookie() {
     return res.code === 0 && !!res.data.user_id;
 }
 
-export { checkCookie, formatNote, formatText, getBoard, getFullNote, getUser, getUserWithCookie, renderNotesFulltext };
+export { checkCookie, formatNote, formatText, getBoard, getFullNote, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext };

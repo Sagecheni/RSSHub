@@ -7,7 +7,7 @@ import { ViewType } from '@/types';
 import cache from '@/utils/cache';
 import { fallback, queryToBoolean } from '@/utils/readable-social';
 
-import { getUser, getUserWithCookie, renderNotesFulltext } from './util';
+import { getUser, getUserCollect, getUserWithCookie, renderNotesFulltext } from './util';
 
 export const route: Route = {
     path: '/user/:user_id/:category/:routeParams?',
@@ -90,8 +90,8 @@ async function getUserFeeds(url: string, category: string) {
     const {
         userPageData: { basicInfo, interactions, tags },
         notes,
-        collect,
     } = await getUser(url, cache);
+    const collect = category === 'collect' ? await getUserCollect(url, cache) : undefined;
 
     const title = `${basicInfo.nickname} - 小红书${category === 'notes' ? '笔记' : '收藏'}`;
     const description = `${basicInfo.desc} ${tags.map((t) => t.name).join(' ')} ${interactions.map((i) => `${i.count} ${i.name}`).join(' ')}`;
@@ -112,19 +112,28 @@ async function getUserFeeds(url: string, category: string) {
         if (!collect) {
             throw new InvalidParameterError('该用户已设置收藏内容不可见');
         }
-        if (collect.code !== 0) {
+        if (typeof collect.code === 'number' && collect.code !== 0) {
             throw new Error(JSON.stringify(collect));
         }
-        if (!collect.data.notes.length) {
+
+        const notes = collect?.data?.notes || collect?.data?.note_list || collect?.notes || collect?.noteList || collect;
+        if (!Array.isArray(notes) || notes.length === 0) {
             throw new InvalidParameterError('该用户已设置收藏内容不可见');
         }
-        return collect.data.notes.map((item) => ({
-            title: item.display_title,
-            link: `${url}/${item.note_id}`,
-            description: `<img src ="${item.cover.info_list.pop().url}"><br>${item.display_title}`,
-            author: item.user.nickname,
-            upvotes: item.interact_info.likedCount,
-        }));
+
+        return notes.map((item) => {
+            const title = item.display_title || item.title || item.noteCard?.displayTitle || '收藏笔记';
+            const noteId = item.note_id || item.noteId || item.noteCard?.noteId || item.id;
+            const coverList = item.cover?.info_list || item.cover?.infoList || item.noteCard?.cover?.infoList || [];
+            const cover = coverList.length ? coverList[coverList.length - 1].url : item.cover?.url;
+            return {
+                title,
+                link: noteId ? `${url}/${noteId}` : url,
+                description: cover ? `<img src ="${cover}"><br>${title}` : title,
+                author: item.user?.nickname || item.user?.nickName || item.noteCard?.user?.nickname,
+                upvotes: item.interact_info?.likedCount || item.interactInfo?.likedCount,
+            };
+        });
     };
 
     return {
