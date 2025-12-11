@@ -7,7 +7,7 @@ import { ViewType } from '@/types';
 import cache from '@/utils/cache';
 import { fallback, queryToBoolean } from '@/utils/readable-social';
 
-import { escapeAttribute, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl } from './util';
+import { checkCookie, escapeAttribute, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl } from './util';
 
 export const route: Route = {
     path: '/user/:user_id/:category/:routeParams?',
@@ -65,24 +65,52 @@ async function handler(ctx) {
     const url = `https://www.xiaohongshu.com/user/profile/${userId}`;
     const cookie = config.xiaohongshu.cookie;
 
-    if (cookie && category === 'notes') {
+    const debugInfo: Record<string, unknown> = {
+        category,
+        profileUrl: url,
+        cookieProvided: Boolean(cookie),
+    };
+
+    if (cookie) {
         try {
-            const urlNotePrefix = 'https://www.xiaohongshu.com/explore';
-            const user = await getUserWithCookie(url);
-            const notes = await renderNotesFulltext(user.notes, urlNotePrefix, displayLivePhoto);
-            return {
-                title: `${user.userPageData.basicInfo.nickname} - 笔记 • 小红书 / RED`,
-                description: user.userPageData.basicInfo.desc,
-                image: user.userPageData.basicInfo.imageb || user.userPageData.basicInfo.images,
-                link: url,
-                item: notes,
-            };
-        } catch {
-            // Fallback to normal logic if cookie method fails
-            return await getUserFeeds(url, category);
+            debugInfo.cookieValid = await checkCookie();
+        } catch (error) {
+            debugInfo.cookieValid = false;
+            debugInfo.cookieCheckError = error instanceof Error ? error.message : String(error);
         }
     } else {
+        debugInfo.cookieValid = false;
+    }
+
+    try {
+        if (cookie && category === 'notes') {
+            debugInfo.noteFetchStrategy = 'cookie';
+            try {
+                const urlNotePrefix = 'https://www.xiaohongshu.com/explore';
+                const user = await getUserWithCookie(url);
+                const noteGroups = Array.isArray(user.notes) ? user.notes : [];
+                const flattenedNotes = typeof noteGroups.flat === 'function' ? noteGroups.flat().filter(Boolean) : noteGroups;
+                debugInfo.availableNoteCards = flattenedNotes.length;
+                const notes = await renderNotesFulltext(user.notes, urlNotePrefix, displayLivePhoto);
+                debugInfo.noteItemsReturned = notes.length;
+                return {
+                    title: `${user.userPageData.basicInfo.nickname} - 笔记 • 小红书 / RED`,
+                    description: user.userPageData.basicInfo.desc,
+                    image: user.userPageData.basicInfo.imageb || user.userPageData.basicInfo.images,
+                    link: url,
+                    item: notes,
+                };
+            } catch (error) {
+                debugInfo.noteFetchStrategy = 'fallback';
+                debugInfo.cookieNotesError = error instanceof Error ? error.message : String(error);
+                return await getUserFeeds(url, category);
+            }
+        }
+
+        debugInfo.noteFetchStrategy = category === 'notes' ? 'puppeteer' : 'collect';
         return await getUserFeeds(url, category);
+    } finally {
+        ctx.set('json', debugInfo);
     }
 }
 
