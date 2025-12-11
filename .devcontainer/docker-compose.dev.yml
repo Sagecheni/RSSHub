@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+    # 1. 主应用容器 (你的开发环境)
+    app:
+        # 保持和你原来一样的基础镜像
+        image: mcr.microsoft.com/devcontainers/typescript-node:24-bookworm
+        volumes:
+            # 将当前目录挂载到容器内
+            - ..:/workspaces/RSSHub:cached
+        # 让容器保持运行
+        command: sleep infinity
+        # 设置环境变量，告诉 RSSHub 去找隔壁的 browserless
+        environment:
+            - PUPPETEER_WS_ENDPOINT=ws://browserless:3000
+            - PUPPETEER_REAL_BROWSER_SERVICE=http://real-browser:3000
+            - REDIS_URL=redis://redis:6379/
+            - NODE_ENV=dev
+            - XIAOHONGSHU_COOKIE="abRequestId=49a785ec-014a-5a95-8bc5-5f4218163b32; a1=198d732702ettovi5yitnrn0z0mk7bvcav5o4h9pd30000352803; webId=f8f64dbde3fbac87f8c80bbde7284e0c; web_session=0400698d3a3ca012cb8a61f3ff3a4baad9efc0; xsecappid=xhs-pc-web; gid=yj0SYWiSi20SyjYfWqJW8hxjJd99lh32v39I2UfFI8u86lq8TWDhS4888q2JY8q8K4dKKWfj; unread={%22ub%22:%226929b94d000000000d00ee1d%22%2C%22ue%22:%226919a4cb000000000500190e%22%2C%22uc%22:28}; webBuild=5.0.5; websectiga=2845367ec3848418062e761c09db7caf0e8b79d132ccdd1a4f8e64a11d0cac0d; sec_poison_id=917c6f5d-8d9d-4d6c-b638-05c974f05e6e; acw_tc=0a4a476817652948673766351e226b28e387a07e3cc43c05d632eb549d0cdc; loadts=1765294954717"
+        depends_on:
+            - browserless
+            - redis
+        network_mode: service:browserless
+
+    # 2. Browserless 容器 (提供可视化调试)
+    browserless:
+        image: browserless/chrome:latest
+        restart: always
+        ports:
+            # 暴露调试端口
+            - '3000:3000'
+            # 如果你需要暴露 APP 端口 (1200)，因为 app 和 browserless 共享网络，写在这里也可以
+            - '1200:1200'
+
+    # 3. Redis 容器 (替换你原来手动安装的 Redis)
+    redis:
+        image: redis:alpine
+        restart: always

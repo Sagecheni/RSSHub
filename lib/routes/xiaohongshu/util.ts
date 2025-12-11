@@ -64,6 +64,25 @@ const shouldDumpCollectHtml = (() => {
     return ['1', 'true', 'yes'].includes(flag.toLowerCase());
 })();
 
+const COLLECT_NOTE_SELECTOR = '#userPostedFeeds section.note-item';
+const COLLECT_API_PATH = '/api/sns/web/v2/note/collect/page';
+
+const isCollectApiRequest = (request) => {
+    try {
+        return request.url().includes(COLLECT_API_PATH) && request.method() === 'GET';
+    } catch {
+        return false;
+    }
+};
+
+const isCollectApiResponse = (response) => {
+    try {
+        const request = response.request();
+        return isCollectApiRequest(request);
+    } catch {
+        return false;
+    }
+};
 
 const dumpCollectPage = async (page, stage: string) => {
     if (!shouldDumpCollectHtml) {
@@ -116,7 +135,7 @@ const extractCollectFromState = (state) => {
         return null;
     }
     const userState = state.user;
-    let collect = unwrapVueValue(userState.collect);
+    const collect = unwrapVueValue(userState.collect);
     if (collect && hasCollectNotes(collect)) {
         return collect;
     }
@@ -145,6 +164,110 @@ const extractCollectFromState = (state) => {
     return null;
 };
 
+const scrollCollectList = async (page, maxRounds = 5) => {
+    let lastCount = 0;
+    try {
+        lastCount = await page.evaluate((selector) => document.querySelectorAll(selector).length, COLLECT_NOTE_SELECTOR);
+    } catch {
+        lastCount = 0;
+    }
+    for (let i = 0; i < maxRounds; i++) {
+        // eslint-disable-next-line no-await-in-loop
+        await page.evaluate(() => {
+            window.scrollTo(0, document.body.scrollHeight);
+            const userPage = document.querySelector('.user-page');
+            if (userPage) {
+                userPage.scrollTop = userPage.scrollHeight;
+            }
+        });
+        // eslint-disable-next-line no-await-in-loop
+        const increased = await page
+            .waitForFunction((selector, previous) => document.querySelectorAll(selector).length > previous, { timeout: 5000 }, COLLECT_NOTE_SELECTOR, lastCount)
+            .then(
+                () => true,
+                () => false
+            );
+        let currentCount = lastCount;
+        try {
+            // eslint-disable-next-line no-await-in-loop
+            currentCount = await page.evaluate((selector) => document.querySelectorAll(selector).length, COLLECT_NOTE_SELECTOR);
+        } catch {
+            currentCount = lastCount;
+        }
+        if (!increased || currentCount <= lastCount) {
+            break;
+        }
+        lastCount = currentCount;
+    }
+    return lastCount;
+};
+
+const selectCollectNotes = (collect) => {
+    if (!collect) {
+        return [];
+    }
+    if (Array.isArray(collect)) {
+        return collect.filter(Boolean);
+    }
+    const data = collect.data ?? collect;
+    if (Array.isArray(data?.notes)) {
+        return data.notes.filter(Boolean);
+    }
+    if (Array.isArray(data?.note_list)) {
+        return data.note_list.filter(Boolean);
+    }
+    if (Array.isArray(collect.notes)) {
+        return collect.notes.filter(Boolean);
+    }
+    if (Array.isArray(collect.noteList)) {
+        return collect.noteList.filter(Boolean);
+    }
+    return [];
+};
+
+const mergeCollectSources = (...sources) => {
+    const merged = [];
+    const seen = new Set();
+    for (const source of sources) {
+        const notes = selectCollectNotes(source);
+        for (const note of notes) {
+            if (!note) {
+                continue;
+            }
+            const noteId = note.note_id || note.noteId || note.id;
+            if (noteId && seen.has(noteId)) {
+                continue;
+            }
+            if (noteId) {
+                seen.add(noteId);
+            }
+            merged.push(note);
+        }
+    }
+    if (!merged.length) {
+        return null;
+    }
+    return {
+        data: {
+            notes: merged,
+        },
+    };
+};
+
+const hasMoreCollectFlag = (collect) => {
+    if (!collect) {
+        return null;
+    }
+    const data = collect.data ?? collect;
+    if (typeof data?.has_more === 'boolean') {
+        return data.has_more;
+    }
+    if (typeof data?.hasMore === 'boolean') {
+        return data.hasMore;
+    }
+    return null;
+};
+
 const getUser = (url, cache) =>
     cache.tryGet(
         url,
@@ -153,7 +276,9 @@ const getUser = (url, cache) =>
                 onBeforeLoad: async (page) => {
                     await page.setRequestInterception(true);
                     page.on('request', (request) => {
-                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other' ? request.continue() : request.abort();
+                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other'
+                            ? request.continue()
+                            : request.abort();
                     });
                     const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
                     if (cookie) {
@@ -235,14 +360,16 @@ const getUserCollect = (url, cache) =>
         async () => {
             const collectUrl = `${url}?tab=fav&subTab=note`;
             const collectFromHttp = await fetchCollectFromHtml(collectUrl);
-            if (collectFromHttp) {
+            if (collectFromHttp && hasMoreCollectFlag(collectFromHttp) === false) {
                 return collectFromHttp;
             }
             const { page, destory } = await getPuppeteerPage(collectUrl, {
                 onBeforeLoad: async (page) => {
                     await page.setRequestInterception(true);
                     page.on('request', (request) => {
-                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other' ? request.continue() : request.abort();
+                        request.resourceType() === 'document' || request.resourceType() === 'script' || request.resourceType() === 'xhr' || request.resourceType() === 'fetch' || request.resourceType() === 'other'
+                            ? request.continue()
+                            : request.abort();
                     });
                     const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
                     if (cookie) {
@@ -258,23 +385,39 @@ const getUserCollect = (url, cache) =>
                     }
                 },
             });
+            let collectResult = collectFromHttp;
+            const collectResponsePromises: Array<Promise<void>> = [];
+            const collectPayloads: Array<Record<string, unknown>> = [];
+            const handleCollectResponse = async (response) => {
+                try {
+                    const json = await response.json();
+                    collectPayloads.push(json);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`Failed to parse collect API response: ${message}`);
+                }
+            };
+            page.on('response', (response) => {
+                if (!isCollectApiResponse(response)) {
+                    return;
+                }
+                const promise = handleCollectResponse(response);
+                collectResponsePromises.push(promise);
+            });
             try {
                 logger.http(`Requesting ${collectUrl}`);
-                const collectResponsePromise = page
-                    .waitForResponse(
-                        (res) => {
-                            const req = res.request();
-                            return req.url().includes('/api/sns/web/v2/note/collect/page') && req.method() === 'GET';
-                        },
-                        { timeout: 15000 }
-                    )
-                    .catch(() => null);
                 await page.goto(collectUrl, {
                     waitUntil: 'domcontentloaded',
                 });
                 await page.waitForSelector('div.reds-tab-item:nth-child(2), #red-captcha', {
                     timeout: 15000,
                 });
+                try {
+                    await page.waitForResponse(isCollectApiResponse, { timeout: 15000 });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`Failed to detect collect API response: ${message}`);
+                }
 
                 if (await page.$('#red-captcha')) {
                     throw new CaptchaError('小红书风控校验，请稍后再试');
@@ -286,63 +429,50 @@ const getUserCollect = (url, cache) =>
                     throw new InvalidParameterError('访问收藏内容需要配置 XIAOHONGSHU_COOKIE');
                 }
 
-                let collect;
-                const response = await collectResponsePromise;
-                if (response) {
-                    try {
-                        collect = await response.json();
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        logger.debug(`Failed to parse collect response json: ${message}`);
-                    }
-                }
-
-                const ensureCollectByClick = async () => {
+                const triggerCollectByClick = async () => {
                     const hasLockIcon = await page.$('.lock-icon');
                     if (hasLockIcon) {
-                        return null;
+                        return false;
                     }
                     try {
-                        const waitForCollect = page
-                            .waitForResponse(
-                                (res) => {
-                                    const req = res.request();
-                                    return req.url().includes('/api/sns/web/v2/note/collect/page') && req.method() === 'GET';
-                                },
-                                { timeout: 15000 }
-                            )
-                            .catch(() => null);
                         await page.click('div.reds-tab-item:nth-child(2)');
-                        const response = await waitForCollect;
-                        if (response) {
-                            return await response.json();
-                        }
+                        await page.waitForResponse(isCollectApiResponse, { timeout: 15000 });
+                        return true;
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error);
                         logger.debug(`Failed to fetch collect data by clicking tab: ${message}`);
                     }
-                    return null;
+                    return false;
                 };
 
                 let initialState = await page.evaluate(() => (window as any).__INITIAL_STATE__);
                 if (!initialState?.user) {
                     initialState = await readInitialStateFromHtml(page);
                 }
-                if (!collect) {
-                    collect = extractCollectFromState(initialState);
+                const ssrCollect = extractCollectFromState(initialState);
+                collectResult = mergeCollectSources(collectResult, ssrCollect) ?? collectResult;
+                if (!collectResult) {
+                    await triggerCollectByClick();
                 }
-                if (!collect) {
-                    collect = await ensureCollectByClick();
-                }
-                if (!collect) {
-                    collect = await extractCollectFromDom(page, url);
-                }
-                if (!collect) {
+                await scrollCollectList(page, 8);
+                await Promise.allSettled(collectResponsePromises);
+                const apiCollect = mergeCollectSources(...collectPayloads);
+                collectResult = mergeCollectSources(collectResult, apiCollect) ?? collectResult;
+                const domCollect = await extractCollectFromDom(page);
+                collectResult = mergeCollectSources(collectResult, domCollect) ?? collectResult;
+                if (!collectResult) {
                     await dumpCollectPage(page, 'failure');
                     throw new InvalidParameterError('无法获取收藏内容，请稍后再试');
                 }
 
-                return collect;
+                return collectResult;
+            } catch (error) {
+                if (collectResult) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`Using partial collect data due to error: ${message}`);
+                    return collectResult;
+                }
+                throw error;
             } finally {
                 await destory();
             }
@@ -353,28 +483,28 @@ const getUserCollect = (url, cache) =>
 
 const parseLikeCount = (text?: string | null) => {
     if (!text) {
-        return undefined;
+        return;
     }
     let normalized = text.trim();
     if (!normalized) {
-        return undefined;
+        return;
     }
     let multiplier = 1;
     if (normalized.includes('万')) {
         multiplier = 10000;
         normalized = normalized.replace('万', '');
     }
-    normalized = normalized.replace(/[^\d.]/g, '');
+    normalized = normalized.replaceAll(/[^\d.]/g, '');
     const value = Number.parseFloat(normalized);
     if (Number.isNaN(value)) {
-        return undefined;
+        return;
     }
     return Math.round(value * multiplier);
 };
 
-const extractCollectFromDom = async (page, baseUrl: string) => {
+const extractCollectFromDom = async (page) => {
     const items = await page.evaluate(() => {
-        const sections = Array.from(document.querySelectorAll('#userPostedFeeds section.note-item'));
+        const sections = [...document.querySelectorAll('#userPostedFeeds section.note-item')];
         return sections
             .map((section) => {
                 const coverLink = section.querySelector('a.cover');
@@ -465,7 +595,34 @@ const formatText = (text) => text.replaceAll(/(\r\n|\r|\n)/g, '<br>').replaceAll
 // tag_list.id has nothing to do with its url
 const formatTagList = (tagList) => tagList.reduce((acc, item) => acc + `#${item.name} `, ``);
 
-const formatImageList = (imageList) => imageList.reduce((acc, item) => acc + `<img src="${item.url}"><br>`, ``);
+const escapeAttribute = (value?: string) => (typeof value === 'string' ? value.replaceAll('"', '&quot;') : '');
+const sanitizeImageUrl = (url?: string | null) => {
+    if (!url) {
+        return '';
+    }
+    let sanitized = url.trim();
+    if (!sanitized) {
+        return '';
+    }
+    const whitespaceIndex = sanitized.search(/\s/);
+    if (whitespaceIndex !== -1) {
+        sanitized = sanitized.slice(0, whitespaceIndex);
+    }
+    const imageViewIndex = sanitized.indexOf('?imageView2');
+    if (imageViewIndex !== -1) {
+        sanitized = sanitized.slice(0, imageViewIndex);
+    }
+    return sanitized;
+};
+
+const formatImageList = (imageList) =>
+    imageList.reduce((acc, item) => {
+        const url = sanitizeImageUrl(item.url);
+        if (!url) {
+            return acc;
+        }
+        return acc + `<img src="${escapeAttribute(url)}"><br>`;
+    }, '');
 
 const formatNote = (url, note) => ({
     title: note.title,
@@ -546,13 +703,12 @@ async function getFullNote(link, displayLivePhoto) {
                 }
             }
 
-            const posterUrl = note.imageList?.[0]?.urlDefault;
+            const posterUrl = sanitizeImageUrl(note.imageList?.[0]?.urlDefault);
 
-            if (videoUrls.length > 0) {
-                mediaContent = `<video controls ${posterUrl ? `poster="${posterUrl}"` : ''}>
-                    ${videoUrls.map((url) => `<source src="${url}" type="video/mp4">`).join('\n')}
-                </video><br>`;
-            }
+            const thumbnailBlock = posterUrl ? `<p><img src="${escapeAttribute(posterUrl)}" referrerpolicy="no-referrer" loading="lazy"></p>` : '';
+            const iframeBlock = `<p><iframe width="640" height="360" src="${escapeAttribute(link)}" frameborder="0" allowfullscreen></iframe></p>`;
+            const fallbackBlock = videoUrls.length ? `<p>${videoUrls.map((url, index) => `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer noopener">视频源 ${index + 1}</a>`).join(' | ')}</p>` : '';
+            mediaContent = `${thumbnailBlock}${iframeBlock}${fallbackBlock}`;
         } else {
             mediaContent = note.imageList
                 .map((image) => {
@@ -572,13 +728,15 @@ async function getFullNote(link, displayLivePhoto) {
                             }
                         }
 
+                        const poster = sanitizeImageUrl(image.urlDefault);
                         if (videoUrls.length > 0) {
-                            return `<video controls poster="${image.urlDefault}">
+                            return `<video controls${poster ? ` poster="${escapeAttribute(poster)}"` : ''}>
                             ${videoUrls.map((url) => `<source src="${url}" type="video/mp4">`).join('\n')}
                         </video>`;
                         }
                     }
-                    return `<img src="${image.urlDefault}">`;
+                    const sanitized = sanitizeImageUrl(image.urlDefault || image.url);
+                    return sanitized ? `<img src="${escapeAttribute(sanitized)}">` : '';
                 })
                 .join('<br>');
         }
@@ -635,4 +793,4 @@ async function checkCookie() {
     return res.code === 0 && !!res.data.user_id;
 }
 
-export { checkCookie, formatNote, formatText, getBoard, getFullNote, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext };
+export { checkCookie, escapeAttribute, formatNote, formatText, getBoard, getFullNote, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl };

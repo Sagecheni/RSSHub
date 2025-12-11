@@ -45,6 +45,8 @@ services:
             interval: 30s # marked
             timeout: 10s # marked
             retries: 3 # marked
+        ports:
+            - '3000:3000' # 👈 确保这一行存在
 
     redis:
         image: redis:alpine

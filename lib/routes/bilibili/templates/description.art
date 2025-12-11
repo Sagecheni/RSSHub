@@ -14,12 +14,11 @@
   {{ if ugc }}
   <p>
     <iframe
-      src="https://player.bilibili.com/player.html?aid={{ aid }}&bvid={{ bvid }}&page=1"
-      scrolling="no"
-      border="0"
-      frameborder="no"
-      framespacing="0"
-      allowfullscreen="true">
+    width="640"
+    height="360"
+    src="https://www.bilibili.com/blackboard/html5mobileplayer.html?aid={{ aid }}&cid={{ cid }}&bvid={{ bvid }}"
+    frameborder="0"
+    allowfullscreen>
     </iframe>
   </p>
   {{ /if }}

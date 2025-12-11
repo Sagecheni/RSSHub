@@ -7,7 +7,7 @@ import { ViewType } from '@/types';
 import cache from '@/utils/cache';
 import { fallback, queryToBoolean } from '@/utils/readable-social';
 
-import { getUser, getUserCollect, getUserWithCookie, renderNotesFulltext } from './util';
+import { escapeAttribute, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl } from './util';
 
 export const route: Route = {
     path: '/user/:user_id/:category/:routeParams?',
@@ -99,14 +99,24 @@ async function getUserFeeds(url: string, category: string) {
 
     const renderNote = (notes) =>
         notes.flatMap((n) =>
-            n.map(({ id, noteCard }) => ({
-                title: noteCard.displayTitle,
-                link: new URL(noteCard.noteId || id, url).toString(),
-                guid: noteCard.displayTitle,
-                description: `<img src ="${noteCard.cover.infoList.pop().url} width="${noteCard.cover.width}" height="${noteCard.cover.height}"><br>${noteCard.displayTitle}`,
-                author: noteCard.user.nickname,
-                upvotes: noteCard.interactInfo.likedCount,
-            }))
+            n.map(({ id, noteCard }) => {
+                const infoList = Array.isArray(noteCard.cover?.infoList) ? noteCard.cover.infoList : [];
+                const coverCandidate = infoList.at(-1);
+                const coverUrl = sanitizeImageUrl(coverCandidate?.url || coverCandidate?.urlDefault);
+                const widthValue = Number(noteCard.cover?.width);
+                const heightValue = Number(noteCard.cover?.height);
+                const widthAttr = Number.isFinite(widthValue) && widthValue > 0 ? ` width="${widthValue}"` : '';
+                const heightAttr = Number.isFinite(heightValue) && heightValue > 0 ? ` height="${heightValue}"` : '';
+                const coverHtml = coverUrl ? `<img src="${escapeAttribute(coverUrl)}"${widthAttr}${heightAttr}>` : '';
+                return {
+                    title: noteCard.displayTitle,
+                    link: new URL(noteCard.noteId || id, url).toString(),
+                    guid: noteCard.displayTitle,
+                    description: coverHtml ? `${coverHtml}<br>${noteCard.displayTitle}` : noteCard.displayTitle,
+                    author: noteCard.user.nickname,
+                    upvotes: noteCard.interactInfo.likedCount,
+                };
+            })
         );
     const renderCollect = (collect) => {
         if (!collect) {
@@ -125,11 +135,12 @@ async function getUserFeeds(url: string, category: string) {
             const title = item.display_title || item.title || item.noteCard?.displayTitle || '收藏笔记';
             const noteId = item.note_id || item.noteId || item.noteCard?.noteId || item.id;
             const coverList = item.cover?.info_list || item.cover?.infoList || item.noteCard?.cover?.infoList || [];
-            const cover = coverList.length ? coverList[coverList.length - 1].url : item.cover?.url;
+            const coverCandidate = coverList.length ? coverList.at(-1) : null;
+            const cover = sanitizeImageUrl(coverCandidate?.url || coverCandidate?.urlDefault || item.cover?.url);
             return {
                 title,
                 link: noteId ? `${url}/${noteId}` : url,
-                description: cover ? `<img src ="${cover}"><br>${title}` : title,
+                description: cover ? `<img src="${escapeAttribute(cover)}"><br>${title}` : title,
                 author: item.user?.nickname || item.user?.nickName || item.noteCard?.user?.nickname,
                 upvotes: item.interact_info?.likedCount || item.interactInfo?.likedCount,
             };
