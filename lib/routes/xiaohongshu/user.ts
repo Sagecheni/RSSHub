@@ -103,6 +103,14 @@ async function handler(ctx) {
                 const noteGroups = Array.isArray(user.notes) ? user.notes : [];
                 const flattenedNotes = typeof noteGroups.flat === 'function' ? noteGroups.flat().filter(Boolean) : noteGroups;
                 debugInfo.availableNoteCards = flattenedNotes.length;
+                const xsecDetected = flattenedNotes.some((note) => typeof note?.id === 'string' && /[?&]xsec_token=/.test(note.id));
+                debugInfo.xsecTokenDetected = xsecDetected;
+                if (!xsecDetected) {
+                    debugInfo.abortReason = 'missing_xsec_token';
+                    const error = new InvalidParameterError('需要先在浏览器中完成登录并访问任意视频笔记，以激活 XIAOHONGSHU_COOKIE 后再抓取');
+                    (error as InvalidParameterError & { missingXsecToken?: boolean }).missingXsecToken = true;
+                    throw error;
+                }
                 const notes = await renderNotesFulltext(user.notes, urlNotePrefix, displayLivePhoto);
                 debugInfo.noteItemsReturned = notes.length;
                 return {
@@ -115,6 +123,9 @@ async function handler(ctx) {
             } catch (error) {
                 debugInfo.noteFetchStrategy = 'fallback';
                 debugInfo.cookieNotesError = error instanceof Error ? error.message : String(error);
+                if ((error as InvalidParameterError & { missingXsecToken?: boolean })?.missingXsecToken) {
+                    throw error;
+                }
                 return await getUserFeeds(url, category);
             }
         }
