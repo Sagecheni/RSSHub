@@ -787,10 +787,19 @@ function extractInitialState($) {
 
 async function checkCookie() {
     const cookie = config.xiaohongshu.cookie;
-    const res = await ofetch('https://edith.xiaohongshu.com/api/sns/web/v2/user/me', {
-        headers: getHeaders(cookie),
-    });
-    return res.code === 0 && !!res.data.user_id;
+    if (!cookie) {
+        return false;
+    }
+    try {
+        const res = await ofetch('https://edith.xiaohongshu.com/api/sns/web/v2/user/me', {
+            headers: getHeaders(cookie),
+        });
+        return res.code === 0 && !!res.data.user_id;
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(`Failed to validate Xiaohongshu cookie: ${message}`);
+        throw error;
+    }
 }
 
 export { checkCookie, escapeAttribute, formatNote, formatText, getBoard, getFullNote, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl };

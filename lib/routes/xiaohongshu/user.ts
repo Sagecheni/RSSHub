@@ -71,19 +71,31 @@ async function handler(ctx) {
         cookieProvided: Boolean(cookie),
     };
 
-    if (cookie) {
+    try {
+        if (!cookie) {
+            debugInfo.cookieValid = false;
+            debugInfo.abortReason = 'missing_cookie';
+            throw new InvalidParameterError('访问小红书内容需要配置 XIAOHONGSHU_COOKIE');
+        }
+
+        let cookieValid = false;
         try {
-            debugInfo.cookieValid = await checkCookie();
+            cookieValid = await checkCookie();
+            debugInfo.cookieCheckTime = new Date().toISOString();
         } catch (error) {
             debugInfo.cookieValid = false;
             debugInfo.cookieCheckError = error instanceof Error ? error.message : String(error);
+            debugInfo.abortReason = 'cookie_check_failed';
+            throw new InvalidParameterError('无法验证 XIAOHONGSHU_COOKIE，请稍后再试');
         }
-    } else {
-        debugInfo.cookieValid = false;
-    }
 
-    try {
-        if (cookie && category === 'notes') {
+        debugInfo.cookieValid = cookieValid;
+        if (!cookieValid) {
+            debugInfo.abortReason = 'cookie_invalid';
+            throw new InvalidParameterError('当前配置的 XIAOHONGSHU_COOKIE 已失效，请更新后再抓取');
+        }
+
+        if (category === 'notes') {
             debugInfo.noteFetchStrategy = 'cookie';
             try {
                 const urlNotePrefix = 'https://www.xiaohongshu.com/explore';
