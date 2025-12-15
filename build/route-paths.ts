@@ -2959,6 +2959,7 @@ export type RoutePath =
   | `/xiaoheihe/news`
   | `/xiaoheihe/user/:id`
   | `/xiaohongshu/board/:board_id`
+  | `/xiaohongshu/login/:sessionId?/:action?`
   | `/xiaohongshu/user/:user_id/:category/:routeParams?`
   | `/xiaomiyoupin/crowdfunding`
   | `/xiaomiyoupin/latest`

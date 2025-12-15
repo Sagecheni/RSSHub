@@ -9083,6 +9083,9 @@
   "/xiaohongshu/board/:board_id": [
     "lotosbin"
   ],
+  "/xiaohongshu/login/:sessionId?/:action?": [
+    "pseudoyu"
+  ],
   "/xiaohongshu/user/:user_id/:category/:routeParams?": [
     "lotosbin",
     "howerhe",
