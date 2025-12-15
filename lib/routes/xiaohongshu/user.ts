@@ -121,13 +121,12 @@ async function handler(ctx) {
                     item: notes,
                 };
             } catch (error) {
-                debugInfo.noteFetchStrategy = 'cookie';
+                debugInfo.noteFetchStrategy = 'fallback';
                 debugInfo.cookieNotesError = error instanceof Error ? error.message : String(error);
                 if ((error as InvalidParameterError & { missingXsecToken?: boolean })?.missingXsecToken) {
                     throw error;
                 }
-                debugInfo.abortReason = 'cookie_fetch_failed';
-                throw error instanceof InvalidParameterError ? error : new InvalidParameterError('使用 XIAOHONGSHU_COOKIE 抓取笔记失败，请检查登录状态或稍后再试');
+                return await getUserFeeds(url, category);
             }
         }
 
