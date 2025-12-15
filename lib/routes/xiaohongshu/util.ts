@@ -13,8 +13,6 @@ import { parseDate } from '@/utils/parse-date';
 import puppeteer, { getPuppeteerPage } from '@/utils/puppeteer';
 import { setCookies } from '@/utils/puppeteer-utils';
 
-import { clearRuntimeCookie, getCookieMeta, getCookieValue } from './cookie';
-
 // Common headers for requests
 const sanitizeCookieString = (cookie?: string) => {
     if (!cookie) {
@@ -282,7 +280,7 @@ const getUser = (url, cache) =>
                             ? request.continue()
                             : request.abort();
                     });
-                    const cookie = sanitizeCookieString(getCookieValue());
+                    const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
                     if (cookie) {
                         await page.setExtraHTTPHeaders({
                             Cookie: cookie,
@@ -334,14 +332,13 @@ const getUser = (url, cache) =>
     );
 
 const fetchCollectFromHtml = async (url: string) => {
-    const cookie = getCookieValue();
-    if (!cookie) {
+    if (!config.xiaohongshu.cookie) {
         return null;
     }
     try {
         logger.http(`Requesting ${url} via HTTP for collect`);
         const res = await ofetch(url, {
-            headers: getHeaders(cookie),
+            headers: getHeaders(config.xiaohongshu.cookie),
         });
         const $ = load(res);
         const script = extractInitialState($);
@@ -374,7 +371,7 @@ const getUserCollect = (url, cache) =>
                             ? request.continue()
                             : request.abort();
                     });
-                    const cookie = sanitizeCookieString(getCookieValue());
+                    const cookie = sanitizeCookieString(config.xiaohongshu.cookie);
                     if (cookie) {
                         await page.setExtraHTTPHeaders({
                             Cookie: cookie,
@@ -619,7 +616,6 @@ const sanitizeImageUrl = (url?: string | null) => {
 };
 
 const formatImageList = (imageList) =>
-    // eslint-disable-next-line unicorn/no-array-reduce -- concatenating image html fragments in order
     imageList.reduce((acc, item) => {
         const url = sanitizeImageUrl(item.url);
         if (!url) {
@@ -669,9 +665,8 @@ async function renderNotesFulltext(notes, urlPrex, displayLivePhoto) {
 
 async function getFullNote(link, displayLivePhoto) {
     const data = (await cache.tryGet(link, async () => {
-        const cookie = getCookieValue();
         const res = await ofetch(link, {
-            headers: getHeaders(cookie),
+            headers: getHeaders(config.xiaohongshu.cookie),
         });
         const $ = load(res);
         const script = extractInitialState($);
@@ -758,7 +753,7 @@ async function getFullNote(link, displayLivePhoto) {
 }
 
 async function getUserWithCookie(url: string) {
-    const cookie = getCookieValue();
+    const cookie = config.xiaohongshu.cookie;
     const res = await ofetch(url, {
         headers: getHeaders(cookie),
     });
@@ -791,8 +786,7 @@ function extractInitialState($) {
 }
 
 async function checkCookie() {
-    const cookieMeta = getCookieMeta();
-    const cookie = cookieMeta.cookie;
+    const cookie = config.xiaohongshu.cookie;
     if (!cookie) {
         return false;
     }
@@ -800,11 +794,7 @@ async function checkCookie() {
         const res = await ofetch('https://edith.xiaohongshu.com/api/sns/web/v2/user/me', {
             headers: getHeaders(cookie),
         });
-        const valid = res.code === 0 && !!res.data.user_id;
-        if (!valid && cookieMeta.source === 'runtime') {
-            clearRuntimeCookie();
-        }
-        return valid;
+        return res.code === 0 && !!res.data.user_id;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.debug(`Failed to validate Xiaohongshu cookie: ${message}`);

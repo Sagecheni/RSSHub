@@ -1,12 +1,12 @@
 import querystring from 'node:querystring';
 
+import { config } from '@/config';
 import InvalidParameterError from '@/errors/types/invalid-parameter';
 import type { Route } from '@/types';
 import { ViewType } from '@/types';
 import cache from '@/utils/cache';
 import { fallback, queryToBoolean } from '@/utils/readable-social';
 
-import { getCookieMeta } from './cookie';
 import { checkCookie, escapeAttribute, getUser, getUserCollect, getUserWithCookie, renderNotesFulltext, sanitizeImageUrl } from './util';
 
 export const route: Route = {
@@ -63,18 +63,13 @@ async function handler(ctx) {
     const routeParams = querystring.parse(ctx.req.param('routeParams'));
     const displayLivePhoto = !!fallback(undefined, queryToBoolean(routeParams.displayLivePhoto), false);
     const url = `https://www.xiaohongshu.com/user/profile/${userId}`;
-    const cookieMeta = getCookieMeta();
-    const cookie = cookieMeta.cookie;
+    const cookie = config.xiaohongshu.cookie;
 
     const debugInfo: Record<string, unknown> = {
         category,
         profileUrl: url,
         cookieProvided: Boolean(cookie),
-        cookieSource: cookieMeta.source,
     };
-    if (cookieMeta.runtimeUpdatedAt) {
-        debugInfo.cookieRuntimeUpdatedAt = new Date(cookieMeta.runtimeUpdatedAt).toISOString();
-    }
 
     try {
         if (!cookie) {
